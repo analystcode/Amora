@@ -1,0 +1,120 @@
+name: CI/CD for AFASTGRok MESH
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # 1. Build & Test Rust node (when src/ appears)
+  # ──────────────────────────────────────────────────────────────
+  rust:
+    name: Rust Build & Test
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[rust]') || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy linting
+        run: cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Upload artifact (mesh-node)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesh-node-x86_64-linux
+          path: target/release/mesh-node
+
+  # ──────────────────────────────────────────────────────────────
+  # 2. Automatically update GitHub Releases with the Whitepaper PDF
+  # ──────────────────────────────────────────────────────────────
+  release-pdf:
+    name: Release Whitepaper PDF
+    needs: []  # runs independently
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download latest whitepaper (or use local)
+        run: |
+          curl -L -o FASTGRok_MESH_Whitepaper_v1.1.pdf \
+            https://transfer.sh/get/YourLatestPDFLinkHere || \
+            cp FASTGRok_MESH_Whitepaper_v1.1.pdf ./ 2>/dev/null || true
+
+      - name: Create/Release GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            FASTGRok_MESH_Whitepaper_v1.1.pdf
+            README.md
+          name: FASTGRok MESH ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  # ──────────────────────────────────────────────────────────────
+  # 3. Pages deployment (optional – static site from /docs)
+  # ──────────────────────────────────────────────────────────────
+  pages:
+    name: Deploy Docs to GitHub Pages
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Pages (MkDocs or plain HTML)
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./docs   # put your docs/whitepaper here
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ──────────────────────────────────────────────────────────────
+  # 4. Security scan (CodeQL)
+  # ──────────────────────────────────────────────────────────────
+  codeql:
+    name: CodeQL Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'rust', 'javascript-typescript' ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - name: Autobuild
